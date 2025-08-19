@@ -258,3 +258,196 @@
         )
     )
 )
+
+;; Public functions - Student Management
+
+;; Register a new student
+;; Only contract owner can register students
+(define-public (register-student (student principal) (name (string-ascii 100)) (institution (string-ascii 200)) (major (string-ascii 100)))
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Check if caller is owner
+        (asserts (is-owner tx-sender) (err ERR-UNAUTHORIZED))
+        
+        ;; Check if student already exists
+        (asserts (not (map-get? students student)) (err ERR-STUDENT-NOT-FOUND))
+        
+        ;; Register student
+        (map-set students student (tuple 
+            (name name)
+            (institution institution)
+            (major major)
+            (enrollment-date (block-height))
+            (is-active true)
+            (total-received u0)
+            (last-disbursement (block-height))
+        ))
+        
+        ;; Initialize academic record
+        (map-set academic-records student (tuple 
+            (current-gpa u0)
+            (credits-completed u0)
+            (semester u0)
+            (last-updated (block-height))
+        ))
+        
+        ;; Update contract state
+        (var-set total-students-registered (+ (var-get total-students-registered) u1))
+        
+        (ok (tuple 
+            (student student)
+            (name name)
+            (institution institution)
+            (major major)
+            (enrollment-date (block-height))
+        ))
+    )
+)
+
+;; Update student academic record
+;; Only verifiers can update academic records
+(define-public (update-academic-record (student principal) (gpa uint) (credits uint) (semester uint))
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Check if caller is a verifier
+        (asserts (is-verifier tx-sender) (err ERR-UNAUTHORIZED))
+        
+        ;; Check if student exists
+        (let ((student-data (unwrap! (map-get? students student) (err ERR-STUDENT-NOT-FOUND))))
+            (asserts (get is-active student-data) (err ERR-STUDENT-NOT-FOUND))
+            
+            ;; Validate GPA
+            (asserts (is-valid-gpa gpa) (err ERR-INVALID-GPA))
+            
+            ;; Update academic record
+            (map-set academic-records student (tuple 
+                (current-gpa gpa)
+                (credits-completed credits)
+                (semester semester)
+                (last-updated (block-height))
+            ))
+            
+            (ok (tuple 
+                (student student)
+                (gpa gpa)
+                (credits credits)
+                (semester semester)
+                (updated-by tx-sender)
+            ))
+        )
+    )
+)
+
+;; Deactivate a student
+;; Only contract owner can deactivate students
+(define-public (deactivate-student (student principal))
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Check if caller is owner
+        (asserts (is-owner tx-sender) (err ERR-UNAUTHORIZED))
+        
+        ;; Check if student exists
+        (let ((student-data (unwrap! (map-get? students student) (err ERR-STUDENT-NOT-FOUND))))
+            (asserts (get is-active student-data) (err ERR-STUDENT-NOT-FOUND))
+            
+            ;; Deactivate student
+            (map-set students student (tuple 
+                (name (get name student-data))
+                (institution (get institution student-data))
+                (major (get major student-data))
+                (enrollment-date (get enrollment-date student-data))
+                (is-active false)
+                (total-received (get total-received student-data))
+                (last-disbursement (get last-disbursement student-data))
+            ))
+            
+            (ok (tuple 
+                (student student)
+                (is-active false)
+            ))
+        )
+    )
+)
+
+;; Public functions - Verification System
+
+;; Add a verifier
+;; Only contract owner can add verifiers
+(define-public (add-verifier (verifier principal))
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Check if caller is owner
+        (asserts (is-owner tx-sender) (err ERR-UNAUTHORIZED))
+        
+        ;; Add verifier
+        (map-set verifiers verifier true)
+        
+        (ok (tuple 
+            (verifier verifier)
+            (added-by tx-sender)
+        ))
+    )
+)
+
+;; Remove a verifier
+;; Only contract owner can remove verifiers
+(define-public (remove-verifier (verifier principal))
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Check if caller is owner
+        (asserts (is-owner tx-sender) (err ERR-UNAUTHORIZED))
+        
+        ;; Remove verifier
+        (map-delete verifiers verifier)
+        
+        (ok (tuple 
+            (verifier verifier)
+            (removed-by tx-sender)
+        ))
+    )
+)
+
+;; Verify academic progress for a student
+;; Only verifiers can verify academic progress
+(define-public (verify-academic-progress (student principal))
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Check if caller is a verifier
+        (asserts (is-verifier tx-sender) (err ERR-UNAUTHORIZED))
+        
+        ;; Check if student exists and is active
+        (let ((student-data (unwrap! (map-get? students student) (err ERR-STUDENT-NOT-FOUND))))
+            (asserts (get is-active student-data) (err ERR-STUDENT-NOT-FOUND))
+            
+            (let ((current-period (get-current-period student))
+                  (verification-key (tuple (student student) (period current-period)))
+                  (existing-verifications (default-to (list) (map-get? academic-verifications verification-key))))
+                
+                ;; Check if verifier already verified this period
+                (asserts (not (contains? existing-verifications tx-sender)) (err ERR-ALREADY-VERIFIED))
+                
+                ;; Add verification
+                (map-set academic-verifications verification-key (append existing-verifications (list tx-sender)))
+                
+                (ok (tuple 
+                    (student student)
+                    (period current-period)
+                    (verifier tx-sender)
+                    (total-verifications (+ (len existing-verifications) u1))
+                ))
+            )
+        )
+    )
+)
