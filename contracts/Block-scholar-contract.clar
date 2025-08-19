@@ -93,3 +93,168 @@
         (/ (- current-block (get last-disbursement student-data)) ACADEMIC-PERIOD-DAYS)
     )
 )
+
+;; Public functions - Scholarship Management
+
+;; Create a new scholarship fund
+;; Only contract owner can create scholarships
+(define-public (create-scholarship (scholarship-owner principal) (min-gpa uint) (disbursement-amount uint) (period-days uint))
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Check if caller is owner
+        (asserts (is-owner tx-sender) (err ERR-UNAUTHORIZED))
+        
+        ;; Validate parameters
+        (asserts (is-valid-gpa min-gpa) (err ERR-INVALID-GPA))
+        (asserts (is-valid-amount disbursement-amount) (err ERR-INVALID-AMOUNT))
+        (asserts (> period-days u0) (err ERR-INVALID-AMOUNT))
+        
+        ;; Initialize scholarship fund
+        (map-set scholarship-funds scholarship-owner (tuple 
+            (balance u0) 
+            (total-distributed u0) 
+            (is-active true)
+        ))
+        
+        ;; Set scholarship settings
+        (map-set scholarship-settings scholarship-owner (tuple 
+            (min-gpa min-gpa) 
+            (disbursement-amount disbursement-amount) 
+            (period-days period-days)
+        ))
+        
+        ;; Update contract state
+        (var-set total-scholarships-created (+ (var-get total-scholarships-created) u1))
+        
+        (ok (tuple 
+            (scholarship-owner scholarship-owner)
+            (min-gpa min-gpa)
+            (disbursement-amount disbursement-amount)
+            (period-days period-days)
+        ))
+    )
+)
+
+;; Fund a scholarship with STX
+;; Anyone can fund a scholarship
+(define-public (fund-scholarship (scholarship-owner principal) (amount uint))
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Validate amount
+        (asserts (is-valid-amount amount) (err ERR-INVALID-AMOUNT))
+        
+        ;; Check if scholarship exists
+        (let ((fund-data (unwrap! (map-get? scholarship-funds scholarship-owner) (err ERR-SCHOLARSHIP-NOT-FOUND))))
+            (asserts (get is-active fund-data) (err ERR-SCHOLARSHIP-NOT-FOUND))
+            
+            ;; Update scholarship balance
+            (map-set scholarship-funds scholarship-owner (tuple 
+                (balance (+ (get balance fund-data) amount))
+                (total-distributed (get total-distributed fund-data))
+                (is-active (get is-active fund-data))
+            ))
+            
+            (ok (tuple 
+                (scholarship-owner scholarship-owner)
+                (new-balance (+ (get balance fund-data) amount))
+                (amount amount)
+            ))
+        )
+    )
+)
+
+;; Update scholarship settings
+;; Only scholarship owner can update settings
+(define-public (update-scholarship-settings (min-gpa uint) (disbursement-amount uint) (period-days uint))
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Check if caller owns a scholarship
+        (let ((fund-data (unwrap! (map-get? scholarship-funds tx-sender) (err ERR-SCHOLARSHIP-NOT-FOUND))))
+            (asserts (get is-active fund-data) (err ERR-SCHOLARSHIP-NOT-FOUND))
+            
+            ;; Validate parameters
+            (asserts (is-valid-gpa min-gpa) (err ERR-INVALID-GPA))
+            (asserts (is-valid-amount disbursement-amount) (err ERR-INVALID-AMOUNT))
+            (asserts (> period-days u0) (err ERR-INVALID-AMOUNT))
+            
+            ;; Update settings
+            (map-set scholarship-settings tx-sender (tuple 
+                (min-gpa min-gpa) 
+                (disbursement-amount disbursement-amount) 
+                (period-days period-days)
+            ))
+            
+            (ok (tuple 
+                (scholarship-owner tx-sender)
+                (min-gpa min-gpa)
+                (disbursement-amount disbursement-amount)
+                (period-days period-days)
+            ))
+        )
+    )
+)
+
+;; Deactivate a scholarship
+;; Only scholarship owner can deactivate
+(define-public (deactivate-scholarship)
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Check if caller owns a scholarship
+        (let ((fund-data (unwrap! (map-get? scholarship-funds tx-sender) (err ERR-SCHOLARSHIP-NOT-FOUND))))
+            (asserts (get is-active fund-data) (err ERR-SCHOLARSHIP-NOT-FOUND))
+            
+            ;; Deactivate scholarship
+            (map-set scholarship-funds tx-sender (tuple 
+                (balance (get balance fund-data))
+                (total-distributed (get total-distributed fund-data))
+                (is-active false)
+            ))
+            
+            (ok (tuple 
+                (scholarship-owner tx-sender)
+                (is-active false)
+            ))
+        )
+    )
+)
+
+;; Withdraw remaining funds from scholarship
+;; Only scholarship owner can withdraw
+(define-public (withdraw-scholarship-funds)
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Check if caller owns a scholarship
+        (let ((fund-data (unwrap! (map-get? scholarship-funds tx-sender) (err ERR-SCHOLARSHIP-NOT-FOUND))))
+            (asserts (get is-active fund-data) (err ERR-SCHOLARSHIP-NOT-FOUND))
+            
+            (let ((balance (get balance fund-data)))
+                (asserts (> balance u0) (err ERR-INSUFFICIENT-FUNDS))
+                
+                ;; Transfer funds to owner
+                (try! (stx-transfer? balance tx-sender tx-sender))
+                
+                ;; Update scholarship balance
+                (map-set scholarship-funds tx-sender (tuple 
+                    (balance u0)
+                    (total-distributed (get total-distributed fund-data))
+                    (is-active (get is-active fund-data))
+                ))
+                
+                (ok (tuple 
+                    (scholarship-owner tx-sender)
+                    (withdrawn-amount balance)
+                ))
+            )
+        )
+    )
+)
