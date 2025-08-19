@@ -451,3 +451,183 @@
         )
     )
 )
+
+;; Public functions - Scholarship Disbursement
+
+;; Request scholarship disbursement
+;; Students can request disbursement if they meet requirements
+(define-public (request-disbursement (scholarship-owner principal))
+    (begin
+        ;; Check if contract is active
+        (asserts (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        
+        ;; Check if student exists and is active
+        (let ((student-data (unwrap! (map-get? students tx-sender) (err ERR-STUDENT-NOT-FOUND))))
+            (asserts (get is-active student-data) (err ERR-STUDENT-NOT-FOUND))
+            
+            ;; Check if scholarship exists and is active
+            (let ((fund-data (unwrap! (map-get? scholarship-funds scholarship-owner) (err ERR-SCHOLARSHIP-NOT-FOUND))))
+                (asserts (get is-active fund-data) (err ERR-SCHOLARSHIP-NOT-FOUND))
+                
+                ;; Check if academic period has elapsed
+                (asserts (can-disburse tx-sender) (err ERR-PERIOD-NOT-ELAPSED))
+                
+                ;; Get academic record
+                (let ((academic-data (unwrap! (map-get? academic-records tx-sender) (err ERR-STUDENT-NOT-FOUND)))
+                      (settings (unwrap! (map-get? scholarship-settings scholarship-owner) (err ERR-SCHOLARSHIP-NOT-FOUND))))
+                    
+                    ;; Check if GPA meets requirements
+                    (asserts (>= (get current-gpa academic-data) (get min-gpa settings)) (err ERR-INVALID-GPA))
+                    
+                    ;; Check if enough verifications exist
+                    (let ((current-period (get-current-period tx-sender))
+                          (verification-key (tuple (student tx-sender) (period current-period)))
+                          (verifications (default-to (list) (map-get? academic-verifications verification-key))))
+                        
+                        (asserts (>= (len verifications) VERIFICATION-THRESHOLD) (err ERR-INSUFFICIENT-VERIFICATIONS))
+                        
+                        ;; Check if sufficient funds are available
+                        (let ((disbursement-amount (get disbursement-amount settings)))
+                            (asserts (>= (get balance fund-data) disbursement-amount) (err ERR-INSUFFICIENT-FUNDS))
+                            
+                            ;; Transfer funds to student
+                            (try! (stx-transfer? disbursement-amount tx-sender tx-sender))
+                            
+                            ;; Update scholarship fund
+                            (map-set scholarship-funds scholarship-owner (tuple 
+                                (balance (- (get balance fund-data) disbursement-amount))
+                                (total-distributed (+ (get total-distributed fund-data) disbursement-amount))
+                                (is-active (get is-active fund-data))
+                            ))
+                            
+                            ;; Update student record
+                            (map-set students tx-sender (tuple 
+                                (name (get name student-data))
+                                (institution (get institution student-data))
+                                (major (get major student-data))
+                                (enrollment-date (get enrollment-date student-data))
+                                (is-active (get is-active student-data))
+                                (total-received (+ (get total-received student-data) disbursement-amount))
+                                (last-disbursement (block-height))
+                            ))
+                            
+                            ;; Update contract state
+                            (var-set total-funds-distributed (+ (var-get total-funds-distributed) disbursement-amount))
+                            
+                            (ok (tuple 
+                                (student tx-sender)
+                                (scholarship-owner scholarship-owner)
+                                (amount disbursement-amount)
+                                (period current-period)
+                                (total-received (+ (get total-received student-data) disbursement-amount))
+                            ))
+                        )
+                    )
+                )
+            )
+        )
+    )
+)
+
+;; Public functions - Contract Management
+
+;; Disable contract
+;; Only contract owner can disable the contract
+(define-public (disable-contract)
+    (begin
+        ;; Check if caller is owner
+        (asserts (is-owner tx-sender) (err ERR-UNAUTHORIZED))
+        
+        ;; Disable contract
+        (var-set contract-active false)
+        
+        (ok (tuple 
+            (contract-active false)
+            (disabled-by tx-sender)
+        ))
+    )
+)
+
+;; Enable contract
+;; Only contract owner can enable the contract
+(define-public (enable-contract)
+    (begin
+        ;; Check if caller is owner
+        (asserts (is-owner tx-sender) (err ERR-UNAUTHORIZED))
+        
+        ;; Enable contract
+        (var-set contract-active true)
+        
+        (ok (tuple 
+            (contract-active true)
+            (enabled-by tx-sender)
+        ))
+    )
+)
+
+;; Read-only functions
+
+;; Get contract statistics
+(define-read-only (get-contract-stats)
+    (tuple 
+        (contract-active (var-get contract-active))
+        (total-scholarships (var-get total-scholarships-created))
+        (total-students (var-get total-students-registered))
+        (total-distributed (var-get total-funds-distributed))
+        (contract-owner CONTRACT-OWNER)
+    )
+)
+
+;; Get student information
+(define-read-only (get-student-info (student principal))
+    (map-get? students student)
+)
+
+;; Get academic record
+(define-read-only (get-academic-record (student principal))
+    (map-get? academic-records student)
+)
+
+;; Get scholarship fund information
+(define-read-only (get-scholarship-fund (scholarship-owner principal))
+    (map-get? scholarship-funds scholarship-owner)
+)
+
+;; Get scholarship settings
+(define-read-only (get-scholarship-settings (scholarship-owner principal))
+    (map-get? scholarship-settings scholarship-owner)
+)
+
+;; Check if address is a verifier
+(define-read-only (is-verifier-address (address principal))
+    (map-get? verifiers address)
+)
+
+;; Get academic verifications for a student and period
+(define-read-only (get-academic-verifications (student principal) (period uint))
+    (map-get? academic-verifications (tuple (student student) (period period)))
+)
+
+;; Check if student can request disbursement
+(define-read-only (can-request-disbursement (student principal) (scholarship-owner principal))
+    (let ((student-data (map-get? students student))
+          (fund-data (map-get? scholarship-funds scholarship-owner))
+          (academic-data (map-get? academic-records student))
+          (settings (map-get? scholarship-settings scholarship-owner)))
+        (if (and student-data fund-data academic-data settings)
+            (let ((student-info (unwrap! student-data (err ERR-STUDENT-NOT-FOUND)))
+                  (fund-info (unwrap! fund-data (err ERR-SCHOLARSHIP-NOT-FOUND)))
+                  (academic-info (unwrap! academic-data (err ERR-STUDENT-NOT-FOUND)))
+                  (scholarship-settings (unwrap! settings (err ERR-SCHOLARSHIP-NOT-FOUND))))
+                (and 
+                    (get is-active student-info)
+                    (get is-active fund-info)
+                    (>= (get current-gpa academic-info) (get min-gpa scholarship-settings))
+                    (>= (get balance fund-info) (get disbursement-amount scholarship-settings))
+                    (can-disburse student)
+                )
+            )
+            false
+        )
+    )
+)
