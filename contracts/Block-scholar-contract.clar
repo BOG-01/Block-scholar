@@ -105,15 +105,15 @@
 (define-public (create-scholarship (scholarship-owner principal) (min-gpa uint) (disbursement-amount uint) (period-days uint))
     (begin
         ;; Check if contract is active
-        (assert (var-get contract-active) (err ERR-CONTRACT-DISABLED))
+        (unwrap! (if (var-get contract-active) true (err ERR-CONTRACT-DISABLED)) (err ERR-CONTRACT-DISABLED))
         
         ;; Check if caller is owner
-        (assert (is-owner tx-sender) (err ERR-UNAUTHORIZED))
+        (unwrap! (if (is-owner tx-sender) true (err ERR-UNAUTHORIZED)) (err ERR-UNAUTHORIZED))
         
         ;; Validate parameters
-        (assert (is-valid-gpa min-gpa) (err ERR-INVALID-GPA))
-        (assert (is-valid-amount disbursement-amount) (err ERR-INVALID-AMOUNT))
-        (assert (> period-days u0) (err ERR-INVALID-AMOUNT))
+        (unwrap! (if (is-valid-gpa min-gpa) true (err ERR-INVALID-GPA)) (err ERR-INVALID-GPA))
+        (unwrap! (if (is-valid-amount disbursement-amount) true (err ERR-INVALID-AMOUNT)) (err ERR-INVALID-AMOUNT))
+        (unwrap! (if (> period-days u0) true (err ERR-INVALID-AMOUNT)) (err ERR-INVALID-AMOUNT))
         
         ;; Initialize scholarship fund
         (map-set scholarship-funds scholarship-owner (tuple 
