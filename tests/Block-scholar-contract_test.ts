@@ -673,3 +673,437 @@ Clarinet.test({
         block.receipts[0].result.expectErr().expectUint(1004); // ERR-STUDENT-NOT-FOUND
     },
 });
+
+// ==============================================
+// COMMIT 3: DISBURSEMENT LOGIC TESTS
+// ==============================================
+
+Clarinet.test({
+    name: "Test scholarship funding functionality",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const scholarshipOwner = accounts.get('wallet_1')!;
+        const funder = accounts.get('wallet_2')!;
+        
+        // Create scholarship first
+        let block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'create-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(300), // 3.0 GPA
+                types.uint(5000000), // 5 STX
+                types.uint(90)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectOk();
+        
+        // Fund the scholarship
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'fund-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(20000000) // 20 STX
+            ], funder.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectOk();
+        
+        // Verify scholarship was funded
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'get-scholarship-fund', [
+                types.principal(scholarshipOwner.address)
+            ], deployer.address)
+        ]);
+        
+        const fundData = block.receipts[0].result.expectOk().expectSome().expectTuple() as any;
+        assertEquals(fundData.balance, types.uint(20000000));
+        assertEquals(fundData['total-distributed'], types.uint(0));
+        assertEquals(fundData['is-active'], types.bool(true));
+    },
+});
+
+Clarinet.test({
+    name: "Test funding non-existent scholarship fails",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const nonExistentOwner = accounts.get('wallet_1')!;
+        const funder = accounts.get('wallet_2')!;
+        
+        // Try to fund non-existent scholarship
+        let block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'fund-scholarship', [
+                types.principal(nonExistentOwner.address),
+                types.uint(10000000)
+            ], funder.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectErr().expectUint(1005); // ERR-SCHOLARSHIP-NOT-FOUND
+    },
+});
+
+Clarinet.test({
+    name: "Test scholarship settings update",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const scholarshipOwner = accounts.get('wallet_1')!;
+        
+        // Create scholarship
+        let block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'create-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(300),
+                types.uint(5000000),
+                types.uint(90)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        
+        // Update settings
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'update-scholarship-settings', [
+                types.uint(320), // 3.2 GPA
+                types.uint(7500000), // 7.5 STX
+                types.uint(120) // 120 days
+            ], scholarshipOwner.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectOk();
+        
+        // Verify settings were updated
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'get-scholarship-settings', [
+                types.principal(scholarshipOwner.address)
+            ], deployer.address)
+        ]);
+        
+        const settings = block.receipts[0].result.expectOk().expectSome().expectTuple() as any;
+        assertEquals(settings['min-gpa'], types.uint(320));
+        assertEquals(settings['disbursement-amount'], types.uint(7500000));
+        assertEquals(settings['period-days'], types.uint(120));
+    },
+});
+
+Clarinet.test({
+    name: "Test scholarship withdrawal functionality",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const scholarshipOwner = accounts.get('wallet_1')!;
+        const funder = accounts.get('wallet_2')!;
+        
+        // Create and fund scholarship
+        let block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'create-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(300),
+                types.uint(5000000),
+                types.uint(90)
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'fund-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(15000000)
+            ], funder.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 2);
+        
+        // Withdraw funds
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'withdraw-scholarship-funds', [], scholarshipOwner.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectOk();
+        
+        // Verify withdrawal
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'get-scholarship-fund', [
+                types.principal(scholarshipOwner.address)
+            ], deployer.address)
+        ]);
+        
+        const fundData = block.receipts[0].result.expectOk().expectSome().expectTuple() as any;
+        assertEquals(fundData.balance, types.uint(0));
+    },
+});
+
+Clarinet.test({
+    name: "Test disbursement request with proper setup",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const scholarshipOwner = accounts.get('wallet_1')!;
+        const student = accounts.get('wallet_2')!;
+        const verifier1 = accounts.get('wallet_3')!;
+        const verifier2 = accounts.get('wallet_4')!;
+        const verifier3 = accounts.get('wallet_5')!;
+        const funder = accounts.get('wallet_6')!;
+        
+        // Setup: Create scholarship, register student, add verifiers
+        let block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'create-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(300), // 3.0 GPA minimum
+                types.uint(5000000), // 5 STX disbursement
+                types.uint(90)
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'register-student', [
+                types.principal(student.address),
+                types.ascii("Jane Scholar"),
+                types.ascii("Excellence University"),
+                types.ascii("Data Science")
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'add-verifier', [
+                types.principal(verifier1.address)
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'add-verifier', [
+                types.principal(verifier2.address)
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'add-verifier', [
+                types.principal(verifier3.address)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 5);
+        
+        // Fund scholarship
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'fund-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(20000000) // 20 STX
+            ], funder.address)
+        ]);
+        
+        // Update academic records with good GPA
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'update-academic-record', [
+                types.principal(student.address),
+                types.uint(350), // 3.5 GPA - above minimum
+                types.uint(60),
+                types.uint(4)
+            ], verifier1.address)
+        ]);
+        
+        // Get required verifications (need 3)
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'verify-academic-progress', [
+                types.principal(student.address)
+            ], verifier1.address),
+            Tx.contractCall('Block-scholar-contract', 'verify-academic-progress', [
+                types.principal(student.address)
+            ], verifier2.address),
+            Tx.contractCall('Block-scholar-contract', 'verify-academic-progress', [
+                types.principal(student.address)
+            ], verifier3.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 3);
+        
+        // Request disbursement
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'request-disbursement', [
+                types.principal(scholarshipOwner.address)
+            ], student.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectOk();
+        
+        // Verify student received funds
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'get-student-info', [
+                types.principal(student.address)
+            ], deployer.address)
+        ]);
+        
+        const studentData = block.receipts[0].result.expectOk().expectSome().expectTuple() as any;
+        assertEquals(studentData['total-received'], types.uint(5000000));
+    },
+});
+
+Clarinet.test({
+    name: "Test disbursement fails with insufficient GPA",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const scholarshipOwner = accounts.get('wallet_1')!;
+        const student = accounts.get('wallet_2')!;
+        const verifier = accounts.get('wallet_3')!;
+        const funder = accounts.get('wallet_4')!;
+        
+        // Setup: Create scholarship requiring 3.0 GPA
+        let block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'create-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(300), // 3.0 GPA minimum
+                types.uint(5000000),
+                types.uint(90)
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'register-student', [
+                types.principal(student.address),
+                types.ascii("Low GPA Student"),
+                types.ascii("State University"),
+                types.ascii("Liberal Arts")
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'add-verifier', [
+                types.principal(verifier.address)
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'fund-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(10000000)
+            ], funder.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 4);
+        
+        // Update with low GPA (below requirement)
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'update-academic-record', [
+                types.principal(student.address),
+                types.uint(280), // 2.8 GPA - below 3.0 minimum
+                types.uint(45),
+                types.uint(3)
+            ], verifier.address)
+        ]);
+        
+        // Try disbursement with low GPA
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'request-disbursement', [
+                types.principal(scholarshipOwner.address)
+            ], student.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectErr().expectUint(1006); // ERR-INVALID-GPA
+    },
+});
+
+Clarinet.test({
+    name: "Test disbursement fails with insufficient verifications",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const scholarshipOwner = accounts.get('wallet_1')!;
+        const student = accounts.get('wallet_2')!;
+        const verifier = accounts.get('wallet_3')!;
+        const funder = accounts.get('wallet_4')!;
+        
+        // Setup: Create funded scholarship
+        let block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'create-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(300),
+                types.uint(5000000),
+                types.uint(90)
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'register-student', [
+                types.principal(student.address),
+                types.ascii("Good Student"),
+                types.ascii("Tech College"),
+                types.ascii("Engineering")
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'add-verifier', [
+                types.principal(verifier.address)
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'fund-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(10000000)
+            ], funder.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 4);
+        
+        // Update with good GPA
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'update-academic-record', [
+                types.principal(student.address),
+                types.uint(370), // 3.7 GPA - good
+                types.uint(75),
+                types.uint(5)
+            ], verifier.address)
+        ]);
+        
+        // Only 1 verification (need 3)
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'verify-academic-progress', [
+                types.principal(student.address)
+            ], verifier.address)
+        ]);
+        
+        // Try disbursement with insufficient verifications
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'request-disbursement', [
+                types.principal(scholarshipOwner.address)
+            ], student.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectErr().expectUint(1008); // ERR-INSUFFICIENT-VERIFICATIONS
+    },
+});
+
+Clarinet.test({
+    name: "Test can-request-disbursement read-only function",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const scholarshipOwner = accounts.get('wallet_1')!;
+        const student = accounts.get('wallet_2')!;
+        const verifier = accounts.get('wallet_3')!;
+        
+        // Setup basic scholarship and student
+        let block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'create-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(300),
+                types.uint(5000000),
+                types.uint(90)
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'register-student', [
+                types.principal(student.address),
+                types.ascii("Test Student"),
+                types.ascii("Test University"),
+                types.ascii("Test Major")
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'add-verifier', [
+                types.principal(verifier.address)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 3);
+        
+        // Check initial state - should be false (no funding, no GPA, no verifications)
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'can-request-disbursement', [
+                types.principal(student.address),
+                types.principal(scholarshipOwner.address)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        assertEquals(block.receipts[0].result.expectOk(), types.bool(false));
+        
+        // Fund scholarship and update GPA
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'fund-scholarship', [
+                types.principal(scholarshipOwner.address),
+                types.uint(10000000)
+            ], deployer.address),
+            Tx.contractCall('Block-scholar-contract', 'update-academic-record', [
+                types.principal(student.address),
+                types.uint(350),
+                types.uint(30),
+                types.uint(2)
+            ], verifier.address)
+        ]);
+        
+        // Should be true now (all requirements met except verifications)
+        block = chain.mineBlock([
+            Tx.contractCall('Block-scholar-contract', 'can-request-disbursement', [
+                types.principal(student.address),
+                types.principal(scholarshipOwner.address)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        assertEquals(block.receipts[0].result.expectOk(), types.bool(true));
+    },
+});
